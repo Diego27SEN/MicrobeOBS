@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.InputSystem;
 
 [System.Serializable]
 public class PlayerSide
@@ -29,6 +30,7 @@ public class GameManager : MonoBehaviour
     [Header("Referencias")]
     public DiceController dice;
     public Camera cam;
+    public CameraController cameraController; // opcional: movimiento suave de cámara
 
     [Header("UI (opcional)")]
     public TextMeshProUGUI timerText;
@@ -38,6 +40,7 @@ public class GameManager : MonoBehaviour
     [Header("Reglas")]
     public float turnDuration = 30f;
     public float switchDelay = 1.5f;
+    public bool revealSunkOrganisms = false; // false: solo se rompen las casillas disparadas
 
     [Header("IA")]
     public float aiThinkDelay = 1.2f; // pausa antes de tirar el dado
@@ -94,7 +97,10 @@ public class GameManager : MonoBehaviour
             return;
         }
 
-        if (Phase == TurnPhase.Shooting && Input.GetMouseButtonDown(0))
+        if (Phase == TurnPhase.Shooting
+            && (cameraController == null || !cameraController.IsMoving) // no disparar mientras viaja la cámara
+            && Mouse.current != null
+            && Mouse.current.leftButton.wasPressedThisFrame)
             HandleClick();
     }
 
@@ -178,7 +184,8 @@ public class GameManager : MonoBehaviour
         if (EventSystem.current != null && EventSystem.current.IsPointerOverGameObject()) return;
 
         var target = Opponent;
-        var cell = target.grid.WorldToCell(cam.ScreenToWorldPoint(Input.mousePosition));
+        Vector2 mousePos = Mouse.current.position.ReadValue();
+        var cell = target.grid.WorldToCell(cam.ScreenToWorldPoint(mousePos));
         if (!target.board.InBounds(cell)) return;
 
         if (!Fire(target, cell)) return; // casilla ya disparada: no gasta el tiro
@@ -246,7 +253,7 @@ public class GameManager : MonoBehaviour
         if (r == ShotResult.Sunk)
         {
             var o = target.board.GetOrganismAt(c);
-            target.view.ShowOrganism(o);
+            if (revealSunkOrganisms) target.view.ShowOrganism(o);
             Say($"¡{o.Name} eliminado!");
         }
     }
@@ -271,10 +278,18 @@ public class GameManager : MonoBehaviour
         Say($"¡{Current.displayName} gana la partida!");
     }
 
+    private bool firstCameraMove = true;
+
     private void ShowBoard(PlayerSide side)
     {
         var p = side.grid.transform.position;
-        cam.transform.position = new Vector3(p.x, p.y, cam.transform.position.z);
+        bool instant = firstCameraMove; // la primera vez, sin animación
+        firstCameraMove = false;
+
+        if (cameraController != null)
+            cameraController.MoveTo(p, instant);
+        else
+            cam.transform.position = new Vector3(p.x, p.y, cam.transform.position.z);
     }
 
     private void UpdateTimerUI()
