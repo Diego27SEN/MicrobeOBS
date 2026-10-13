@@ -22,7 +22,8 @@ public class BoardView : MonoBehaviour
     private readonly Dictionary<Vector2Int, GameObject> covers = new Dictionary<Vector2Int, GameObject>();
     private readonly HashSet<Vector2Int> pieces = new HashSet<Vector2Int>();
     private readonly HashSet<Organism> revealed = new HashSet<Organism>();
-    private readonly List<GameObject> ownObjects = new List<GameObject>();
+    private readonly Dictionary<Organism, List<GameObject>> ownObjects = new Dictionary<Organism, List<GameObject>>();
+    private readonly List<GameObject> previewObjects = new List<GameObject>();
     private bool coversBuilt;
     private bool ownVisible;
 
@@ -106,13 +107,52 @@ public class BoardView : MonoBehaviour
     // ---------- Organismos propios ----------
 
     // Dibuja los organismos PROPIOS (se pueden ocultar con SetOwnVisible)
+    // También sirve para redibujar un organismo después de moverlo.
     public void ShowOwn(Organism o)
     {
+        if (ownObjects.TryGetValue(o, out var old))
+            foreach (var go in old)
+                if (go != null) Destroy(go);
+
+        var list = new List<GameObject>();
         foreach (var c in o.Cells())
         {
             var go = Spawn(organismPrefab, c);
-            if (go != null) ownObjects.Add(go);
+            if (go == null) continue;
+            go.SetActive(ownVisible);
+            list.Add(go);
         }
+        ownObjects[o] = list;
+    }
+
+    // ---------- Vista previa (para reubicar) ----------
+
+    public void SetPreview(IEnumerable<Vector2Int> cells, Color color)
+    {
+        ClearPreview();
+        var prefab = revealPrefab != null ? revealPrefab : coverPrefab;
+        if (prefab == null || grid == null) return;
+
+        float size = grid.cellSize - coverPadding;
+        foreach (var c in cells)
+        {
+            var go = Spawn(prefab, c);
+            go.transform.localScale = new Vector3(size, size, 1f);
+            var sr = go.GetComponent<SpriteRenderer>();
+            if (sr != null)
+            {
+                sr.color = color;
+                sr.sortingOrder = 3;
+            }
+            previewObjects.Add(go);
+        }
+    }
+
+    public void ClearPreview()
+    {
+        foreach (var go in previewObjects)
+            if (go != null) Destroy(go);
+        previewObjects.Clear();
     }
 
     // Visible: se ven tus organismos y se quita la niebla. Oculto: vuelve la niebla.
@@ -120,8 +160,9 @@ public class BoardView : MonoBehaviour
     {
         EnsureCovers();
         ownVisible = visible;
-        foreach (var go in ownObjects)
-            if (go != null) go.SetActive(visible);
+        foreach (var list in ownObjects.Values)
+            foreach (var go in list)
+                if (go != null) go.SetActive(visible);
         foreach (var cover in covers.Values)
             if (cover != null) cover.SetActive(!visible);
     }

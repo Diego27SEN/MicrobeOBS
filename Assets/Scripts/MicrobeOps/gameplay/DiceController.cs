@@ -2,14 +2,17 @@ using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
-public enum DiceOutcome { None, Single, Double, Missile, Event }
+public enum DiceOutcome { None, Single, Double, Missile, Relocate, Reveal }
 
 // Solo el dado. Ponlo en un GameObject de la escena y asigna los campos en el Inspector.
 public class DiceController : MonoBehaviour
 {
     [SerializeField] private TextMeshProUGUI diceResultValue;
     [SerializeField] private Button rollButton;
-    [SerializeField] private bool eventsEnabled = false; // apagado: la cara 5 cuenta como doble
+
+    // Apagado: esa cara cuenta como disparo de 1 casilla.
+    [SerializeField] private bool relocateEnabled = true;  // Reubicar un organismo
+    [SerializeField] private bool revealEnabled = false;   // Revelar (rayos X): aún sin implementar
 
     public int RemainingShots { get; private set; }
     public bool HasRolled { get; private set; }
@@ -22,13 +25,13 @@ public class DiceController : MonoBehaviour
     // Se dispara justo después de tirar el dado
     public event System.Action<DiceOutcome> OnRolled;
 
+    private bool locked; // true durante el turno de la IA: el jugador no puede tirar
+
     private void Start()
     {
         if (rollButton != null) rollButton.onClick.AddListener(OnRollButtonPressed);
         UpdateUI();
     }
-
-    private bool locked; // true durante el turno de la IA: el jugador no puede tirar
 
     public void SetLocked(bool value)
     {
@@ -42,19 +45,21 @@ public class DiceController : MonoBehaviour
         RollDice();
     }
 
-    public static DiceOutcome OutcomeFromFace(int face, bool eventsEnabled)
-    {
-        if (eventsEnabled)
-        {
-            if (face <= 2) return DiceOutcome.Single;  // 1-2
-            if (face <= 4) return DiceOutcome.Double;  // 3-4
-            if (face == 5) return DiceOutcome.Event;   // 5
-            return DiceOutcome.Missile;                // 6
-        }
+    public const int Faces = 10;
 
-        if (face <= 3) return DiceOutcome.Single;      // 1-3
-        if (face <= 5) return DiceOutcome.Double;      // 4-5
-        return DiceOutcome.Missile;                    // 6
+    // Regla del dado separada de la interfaz: fácil de cambiar o de validar en servidor.
+    //  1-4  -> 1 casilla   (40 %)
+    //  5-7  -> 2 casillas  (30 %)
+    //  8    -> Misil 2x2   (10 %)
+    //  9    -> Reubicar    (10 %)
+    //  10   -> Revelar     (10 %)
+    public static DiceOutcome OutcomeFromFace(int face, bool relocateEnabled, bool revealEnabled)
+    {
+        if (face <= 4) return DiceOutcome.Single;
+        if (face <= 7) return DiceOutcome.Double;
+        if (face == 8) return DiceOutcome.Missile;
+        if (face == 9) return relocateEnabled ? DiceOutcome.Relocate : DiceOutcome.Single;
+        return revealEnabled ? DiceOutcome.Reveal : DiceOutcome.Single;
     }
 
     public void RollDice()
@@ -62,8 +67,8 @@ public class DiceController : MonoBehaviour
         if (HasRolled) return; // una tirada por turno
 
         HasRolled = true;
-        int face = Random.Range(1, 7);
-        CurrentOutcome = OutcomeFromFace(face, eventsEnabled);
+        int face = Random.Range(1, Faces + 1);
+        CurrentOutcome = OutcomeFromFace(face, relocateEnabled, revealEnabled);
         Debug.Log($"Dado: {face} -> {CurrentOutcome}");
 
         switch (CurrentOutcome)
@@ -71,7 +76,7 @@ public class DiceController : MonoBehaviour
             case DiceOutcome.Single: RemainingShots = 1; break;
             case DiceOutcome.Double: RemainingShots = 2; break;
             case DiceOutcome.Missile: RemainingShots = 1; break; // 1 disparo, área 2x2
-            default: RemainingShots = 0; break;
+            default: RemainingShots = 0; break; // Relocate / Reveal: sin disparos
         }
 
         UpdateUI();
@@ -98,17 +103,21 @@ public class DiceController : MonoBehaviour
     private void UpdateUI()
     {
         if (rollButton != null) rollButton.interactable = !HasRolled && !locked;
-
         if (diceResultValue == null) return;
 
-        if (!HasRolled || RemainingShots <= 0)
+        if (!HasRolled) { diceResultValue.text = ""; return; }
+
+        switch (CurrentOutcome)
         {
-            diceResultValue.text = "";
-            return;
+            case DiceOutcome.Relocate: diceResultValue.text = "Mover"; break;
+            case DiceOutcome.Reveal: diceResultValue.text = "Rayos X"; break;
+            case DiceOutcome.Missile: diceResultValue.text = RemainingShots > 0 ? "2x2" : ""; break;
+            default: diceResultValue.text = RemainingShots > 0 ? RemainingShots.ToString() : ""; break;
         }
 
-        diceResultValue.text = CurrentOutcome == DiceOutcome.Missile
-            ? "2x2"
-            : RemainingShots.ToString();
+
+
+
+
     }
 }

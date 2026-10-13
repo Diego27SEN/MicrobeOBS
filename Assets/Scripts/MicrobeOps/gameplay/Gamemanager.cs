@@ -15,7 +15,7 @@ public class PlayerSide
     [HideInInspector] public bool isAI;
 }
 
-public enum TurnPhase { Rolling, Shooting, Switching, GameOver }
+public enum TurnPhase { Rolling, Shooting, Relocating, Switching, GameOver }
 
 // Modos: Local (2 jugadores en el mismo dispositivo) y VsAI (tú = Glóbulos Blancos, IA = Bacterias).
 public class GameManager : MonoBehaviour
@@ -46,12 +46,22 @@ public class GameManager : MonoBehaviour
     public float aiThinkDelay = 1.2f; // pausa antes de tirar el dado
     public float aiShotDelay = 0.9f;  // pausa entre disparos
 
+    [Header("Reubicar (colores de la vista previa)")]
+    public Color selectColor = new Color(1f, 0.9f, 0.2f, 0.65f);
+    public Color validColor = new Color(0.2f, 0.9f, 0.3f, 0.65f);
+    public Color invalidColor = new Color(0.95f, 0.2f, 0.2f, 0.65f);
+
     public TurnPhase Phase { get; private set; }
 
     private PlayerSide[] sides;
     private int currentIndex;
     private float timeLeft;
     private readonly EnemyAI ai = new EnemyAI();
+    private bool firstCameraMove = true;
+
+    // Reubicar
+    private Organism selected;
+    private int relocRotation;
 
     private PlayerSide Current => sides[currentIndex];
     private PlayerSide Opponent => sides[1 - currentIndex];
@@ -86,7 +96,7 @@ public class GameManager : MonoBehaviour
 
     private void Update()
     {
-        if (Phase != TurnPhase.Rolling && Phase != TurnPhase.Shooting) return;
+        if (Phase != TurnPhase.Rolling && Phase != TurnPhase.Shooting && Phase != TurnPhase.Relocating) return;
         if (Current.isAI) return; // la IA juega por corrutinas y no usa el temporizador
 
         timeLeft -= Time.deltaTime;
@@ -97,11 +107,14 @@ public class GameManager : MonoBehaviour
             return;
         }
 
+        if (cameraController != null && cameraController.IsMoving) return; // no actuar mientras viaja la cámara
+
         if (Phase == TurnPhase.Shooting
-            && (cameraController == null || !cameraController.IsMoving) // no disparar mientras viaja la cámara
             && Mouse.current != null
             && Mouse.current.leftButton.wasPressedThisFrame)
             HandleClick();
+        else if (Phase == TurnPhase.Relocating)
+            HandleRelocateInput();
     }
 
     // ---------- Turnos ----------
@@ -111,6 +124,7 @@ public class GameManager : MonoBehaviour
         currentIndex = index;
         timeLeft = turnDuration;
         Phase = TurnPhase.Rolling;
+        selected = null;
 
         dice.ResetDice();
         dice.SetLocked(Current.isAI);
@@ -138,7 +152,26 @@ public class GameManager : MonoBehaviour
     {
         if (Phase != TurnPhase.Rolling) return;
 
-        if (!dice.CanShoot) // p. ej. un evento aún sin implementar
+        if (outcome == DiceOutcome.Relocate)
+        {
+            Phase = TurnPhase.Relocating;
+            selected = null;
+            ApplyOwnVisibility();
+
+            if (Current.isAI)
+            {
+                Say($"{Current.displayName} va a reubicar un organismo...");
+                StartCoroutine(AIRelocateRoutine());
+            }
+            else
+            {
+                ShowBoard(Current);
+                Say("Reubicar: haz clic en uno de tus organismos. Usar esto cuesta tu turno.");
+            }
+            return;
+        }
+
+        if (!dice.CanShoot) // p. ej. Revelar, aún sin implementar
         {
             Say($"Resultado: {outcome}. No hay disparos, se pasa el turno.");
             StartCoroutine(SwitchTurnRoutine());
@@ -164,24 +197,32 @@ public class GameManager : MonoBehaviour
 
     private void TimeUp()
     {
-        Say(dice.HasRolled
-            ? "¡Se acabó el tiempo! Pierdes los disparos que te quedaban."
-            : "¡Se acabó el tiempo! Pierdes el turno.");
+        if (Phase == TurnPhase.Relocating)
+            Say("¡Se acabó el tiempo! Pierdes la reubicación.");
+        else
+            Say(dice.HasRolled
+                ? "¡Se acabó el tiempo! Pierdes los disparos que te quedaban."
+                : "¡Se acabó el tiempo! Pierdes el turno.");
         StartCoroutine(SwitchTurnRoutine());
     }
 
     private IEnumerator SwitchTurnRoutine()
     {
         Phase = TurnPhase.Switching;
+        selected = null;
+        Current.view.ClearPreview();
         yield return new WaitForSeconds(switchDelay);
         StartTurn(1 - currentIndex);
     }
 
     // ---------- Disparos del jugador ----------
 
+    private bool PointerOverUI() =>
+        EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
+
     private void HandleClick()
     {
-        if (EventSystem.current != null && EventSystem.current.IsPointerOverGameObject()) return;
+        if (PointerOverUI()) return;
 
         var target = Opponent;
         Vector2 mousePos = Mouse.current.position.ReadValue();
@@ -218,13 +259,76 @@ public class GameManager : MonoBehaviour
         return true;
     }
 
+    // ---------- Reubicar (clic y clic) ----------
+
+    private void HandleRelocateInput()
+    {
+        var mouse = Mouse.current;
+        var kb = Keyboard.current;
+        if (mouse == null) return;
+
+        var side = Current;
+        Vector2 mousePos = mouse.position.ReadValue();
+        var cell = side.grid.WorldToCell(cam.ScreenToWorldPoint(mousePos));
+        bool click = mouse.leftButton.wasPressedThisFrame && !PointerOverUI();
+
+        // Paso 2: ya hay un organismo elegido -> elegir destino
+        if (selected != null)
+        {
+            if (kb != null && kb.rKey.wasPressedThisFrame)
+                relocRotation = (relocRotation + 1) % 4;
+
+            if (mouse.rightButton.wasPressedThisFrame || (kb != null && kb.escapeKey.wasPressedThisFrame))
+            {
+                selected = null;
+                side.view.ClearPreview();
+                Say("Selección cancelada. Elige otro organismo.");
+                return;
+            }
+
+            bool valid = side.board.CanMove(selected, cell, relocRotation);
+            side.view.SetPreview(selected.CellsAt(cell, relocRotation), valid ? validColor : invalidColor);
+
+            if (!click) return;
+
+            if (!valid)
+            {
+                Say("Ahí no cabe: se sale, se solapa o cae en una casilla ya disparada.");
+                return;
+            }
+
+            side.board.Move(selected, cell, relocRotation);
+            side.view.ClearPreview();
+            side.view.ShowOwn(selected);
+            Say($"{selected.Name} reubicado. Termina tu turno.");
+            selected = null;
+            StartCoroutine(SwitchTurnRoutine());
+            return;
+        }
+
+        // Paso 1: elegir el organismo
+        if (!click || !side.board.InBounds(cell)) return;
+
+        var o = side.board.GetOrganismAt(cell);
+        if (o == null || o.IsSunk)
+        {
+            Say("Elige una casilla de uno de tus organismos.");
+            return;
+        }
+
+        selected = o;
+        relocRotation = o.Rotation;
+        side.view.SetPreview(o.Cells(), selectColor);
+        Say($"{o.Name} elegido. Clic en el destino (R rota, clic derecho o Esc cancela).");
+    }
+
     // ---------- Turno de la IA ----------
 
     private IEnumerator AIRollRoutine()
     {
         yield return new WaitForSeconds(aiThinkDelay);
         if (Phase == TurnPhase.Rolling && Current.isAI)
-            dice.RollDice(); // dispara OnRolled -> HandleRolled -> AIShootRoutine
+            dice.RollDice(); // dispara OnRolled -> HandleRolled
     }
 
     private IEnumerator AIShootRoutine()
@@ -245,6 +349,40 @@ public class GameManager : MonoBehaviour
         StartCoroutine(SwitchTurnRoutine());
     }
 
+    // La IA mueve primero un organismo dañado; si no hay, uno al azar.
+    private IEnumerator AIRelocateRoutine()
+    {
+        yield return new WaitForSeconds(aiShotDelay);
+
+        var board = Current.board;
+        var alive = new List<Organism>();
+        Organism pick = null;
+
+        foreach (var o in board.Organisms)
+        {
+            if (o.IsSunk) continue;
+            alive.Add(o);
+            if (pick == null && o.Hits > 0) pick = o;
+        }
+        if (pick == null && alive.Count > 0) pick = alive[Random.Range(0, alive.Count)];
+
+        if (pick != null)
+        {
+            for (int i = 0; i < 200; i++)
+            {
+                var origin = new Vector2Int(Random.Range(0, board.Cols), Random.Range(0, board.Rows));
+                int rot = Random.Range(0, 4);
+                if (!board.Move(pick, origin, rot)) continue;
+
+                Current.view.ShowOwn(pick);
+                Say($"{Current.displayName} reubicó un organismo.");
+                break;
+            }
+        }
+
+        StartCoroutine(SwitchTurnRoutine());
+    }
+
     // ---------- Utilidades ----------
 
     private void ApplyShot(PlayerSide target, Vector2Int c, ShotResult r)
@@ -260,14 +398,14 @@ public class GameManager : MonoBehaviour
 
     // Quién ve sus propios organismos:
     //  - VsAI: el humano siempre; los de la IA nunca.
-    //  - Local: solo el jugador en turno, y solo mientras tira el dado.
+    //  - Local: solo el jugador en turno, mientras tira el dado o reubica.
     private void ApplyOwnVisibility()
     {
         foreach (var s in sides)
         {
             bool visible = mode == GameMode.VsAI
                 ? !s.isAI
-                : (s == Current && Phase == TurnPhase.Rolling);
+                : (s == Current && (Phase == TurnPhase.Rolling || Phase == TurnPhase.Relocating));
             s.view.SetOwnVisible(visible);
         }
     }
@@ -277,8 +415,6 @@ public class GameManager : MonoBehaviour
         Phase = TurnPhase.GameOver;
         Say($"¡{Current.displayName} gana la partida!");
     }
-
-    private bool firstCameraMove = true;
 
     private void ShowBoard(PlayerSide side)
     {
@@ -309,8 +445,8 @@ public class GameManager : MonoBehaviour
     }
 
     private List<Organism> CreateWhiteCells() => new List<Organism>
-        { Organism.Neutrofilo(), Organism.Macrofago(), Organism.Linfocito(), Organism.Eosinofilo() };
+        { Organism.Neutrofilo(), Organism.Macrofago(), Organism.Linfocito(), Organism.Eosinofilo(), Organism.Basofilo() };
 
     private List<Organism> CreateBacteria() => new List<Organism>
-        { Organism.EColi(), Organism.Staphylococcus(), Organism.Salmonella(), Organism.Streptococcus() };
+        { Organism.EColi(), Organism.Staphylococcus(), Organism.Salmonella(), Organism.Streptococcus(), Organism.Mycoplasma() };
 }

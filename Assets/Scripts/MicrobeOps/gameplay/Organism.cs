@@ -26,6 +26,13 @@ public class Organism
             yield return Origin + Rotate(offset, Rotation);
     }
 
+    // Casillas que ocuparía en otro origen/rotación (sin moverlo)
+    public IEnumerable<Vector2Int> CellsAt(Vector2Int origin, int rotation)
+    {
+        foreach (var offset in Shape)
+            yield return origin + Rotate(offset, rotation);
+    }
+
     private static Vector2Int Rotate(Vector2Int v, int quarterTurns)
     {
         for (int i = 0; i < ((quarterTurns % 4) + 4) % 4; i++)
@@ -49,10 +56,12 @@ public class Organism
     public static Organism Salmonella() => Line("Salmonella", 3);
     public static Organism Staphylococcus() => LShape("Staphylococcus");
     public static Organism Streptococcus() => Line("Streptococcus", 2);
+    public static Organism Mycoplasma() => Line("Mycoplasma", 1);
 
     // Glóbulos blancos
     public static Organism Neutrofilo() => Line("Neutrófilo", 4);
     public static Organism Linfocito() => Line("Linfocito", 3);
     public static Organism Macrofago() => LShape("Macrófago");
     public static Organism Eosinofilo() => Line("Eosinófilo", 2);
+    public static Organism Basofilo() => Line("Basófilo", 1);
 }

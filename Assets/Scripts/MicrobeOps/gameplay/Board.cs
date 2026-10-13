@@ -99,6 +99,47 @@ public class Board
 
     public Organism GetOrganismAt(Vector2Int c) => organismAt[c.x, c.y];
 
+    // ¿Puede el organismo ocupar esa posición? Solo casillas vacías (o las suyas sin tocar).
+    // Las casillas ya disparadas no valen.
+    public bool CanMove(Organism o, Vector2Int origin, int rotation)
+    {
+        if (o == null || o.IsSunk || !organisms.Contains(o)) return false;
+
+        foreach (var c in o.CellsAt(origin, rotation))
+        {
+            if (!InBounds(c)) return false;
+            var st = cells[c.x, c.y];
+            if (st == CellState.Empty) continue;
+            if (st == CellState.Ship && organismAt[c.x, c.y] == o) continue;
+            return false;
+        }
+        return true;
+    }
+
+    // Mueve el organismo. Se cura al moverse; las casillas que ya le habían dado
+    // quedan marcadas como disparadas en el sitio viejo.
+    public bool Move(Organism o, Vector2Int origin, int rotation)
+    {
+        if (!CanMove(o, origin, rotation)) return false;
+
+        foreach (var c in o.Cells())
+        {
+            if (cells[c.x, c.y] == CellState.Ship) cells[c.x, c.y] = CellState.Empty;
+            organismAt[c.x, c.y] = null;
+        }
+
+        o.Origin = origin;
+        o.Rotation = rotation;
+        o.Hits = 0;
+
+        foreach (var c in o.Cells())
+        {
+            cells[c.x, c.y] = CellState.Ship;
+            organismAt[c.x, c.y] = o;
+        }
+        return true;
+    }
+
     public bool AllSunk()
     {
         foreach (var o in organisms)
